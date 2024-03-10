@@ -236,6 +236,25 @@ class TileLayer extends StatefulWidget {
   /// no affect.
   final TileUpdateTransformer tileUpdateTransformer;
 
+  /// Defines the minimum delay time from last map event before the tile layers
+  /// are updated. This delay acts as a debounce period to prevent frequent
+  /// reloading of tile layers in response to rapid, successive events
+  /// (e.g., zooming or panning).
+  ///
+  /// 16ms could be a good starting point for most applications.
+  /// This at 60fps this will wait one frame after the last event.
+  ///
+  /// By setting this delay, we ensure that map layer updates are performed
+  /// only after a period of inactivity, enhancing performance and user
+  /// experience on lower performance devices.
+  ///
+  /// - If multiple events occur within this delay period, only the last event
+  ///   triggers the tile layer update, reducing unnecessary processing and
+  ///   network requests.
+  /// - If the [loadingDelay] is `Duration.zero`, the delay is completely
+  /// disabled and the tile layer will update as soon as possible.
+  final Duration loadingDelay;
+
   TileLayer({
     super.key,
     this.urlTemplate,
@@ -278,6 +297,7 @@ class TileLayer extends StatefulWidget {
     this.evictErrorTileStrategy = EvictErrorTileStrategy.none,
     this.reset,
     this.tileBounds,
+    this.loadingDelay = Duration.zero,
     TileUpdateTransformer? tileUpdateTransformer,
     String userAgentPackageName = 'unknown',
   })  : assert(
@@ -372,6 +392,9 @@ class _TileLayerState extends State<TileLayer> with TickerProviderStateMixin {
       TileRangeCalculator(tileSize: widget.tileSize);
   late TileScaleCalculator _tileScaleCalculator;
 
+  /// Delay Timer for [TileLayer.loadingDelay]
+  Timer? _delayTimer;
+
   // We have to hold on to the mapController hashCode to determine whether we
   // need to reinitialize the listeners. didChangeDependencies is called on
   // every map movement and if we unsubscribe and resubscribe every time we
@@ -385,6 +408,24 @@ class _TileLayerState extends State<TileLayer> with TickerProviderStateMixin {
     _tileImageManager.removeAll(widget.evictErrorTileStrategy);
     _loadAndPruneInVisibleBounds(MapCamera.of(context));
   });
+
+  /// This method is used to delay the execution of a function by the specified
+  /// [TileLayer.loadingDelay]. This is useful to prevent frequent reloading
+  /// of tile layers in response to rapid, successive events (e.g., zooming
+  /// or panning).
+  void _loadingDelay(VoidCallback action) {
+    //execute immediately if delay is zero.
+    if (widget.loadingDelay == Duration.zero) {
+      action();
+      return;
+    }
+
+    // Cancel the previous timer if it is still active.
+    _delayTimer?.cancel();
+
+    // Reset the timer to wait for the debounce duration
+    _delayTimer = Timer(widget.loadingDelay, action);
+  }
 
   // This is called on every map movement so we should avoid expensive logic
   // where possible.
@@ -402,7 +443,7 @@ class _TileLayerState extends State<TileLayer> with TickerProviderStateMixin {
       _tileUpdateSubscription = mapController.mapEventStream
           .map((mapEvent) => TileUpdateEvent(mapEvent: mapEvent))
           .transform(widget.tileUpdateTransformer)
-          .listen((event) => _onTileUpdateEvent(event));
+          .listen((event) => _loadingDelay(() => _onTileUpdateEvent(event)));
     }
 
     var reloadTiles = false;
